@@ -1,7 +1,6 @@
 import { PluginSettingTab, Setting, type App } from "obsidian";
-import { DEFAULT_SETTINGS } from "./defaults";
 import type ImageUploaderPlugin from "./main";
-import type { Locale, LogLevel } from "./types";
+import type { Locale, LogLevel, RemoteStoreSettings } from "./types";
 
 const LOCALES: Locale[] = ["auto", "zh-CN", "zh-TW", "en", "ko", "ja"];
 const LOG_LEVELS: LogLevel[] = ["trace", "debug", "log", "info", "warn", "error", "off"];
@@ -13,10 +12,16 @@ export class ImageUploaderSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
-    const t = this.plugin.t;
-    const store = this.activeStore();
     containerEl.empty();
-    containerEl.createEl("h2", { text: t("settingsTitle") });
+
+    new Setting(containerEl).setName(this.plugin.t("generalTab")).setHeading();
+    this.renderGeneralSettings(containerEl);
+    new Setting(containerEl).setName("GitHub").setHeading();
+    this.renderStoreSettings(containerEl, this.activeStoreByType("github"));
+  }
+
+  private renderGeneralSettings(containerEl: HTMLElement): void {
+    const t = this.plugin.t;
 
     new Setting(containerEl)
       .setName(t("locale"))
@@ -45,54 +50,40 @@ export class ImageUploaderSettingTab extends PluginSettingTab {
       .setName(t("activeStore"))
       .setDesc(t("activeStoreDesc"))
       .addDropdown((dropdown) => {
-        for (const configuredStore of this.plugin.settings.stores) {
-          dropdown.addOption(configuredStore.id, configuredStore.name);
+        for (const store of this.plugin.settings.stores) {
+          dropdown.addOption(store.id, store.name);
         }
         dropdown.setValue(this.plugin.settings.activeStoreId).onChange(async (value) => {
           this.plugin.settings.activeStoreId = value;
           await this.plugin.saveSettings();
-          this.display();
         });
       });
 
     new Setting(containerEl)
-      .setName(t("storeName"))
-      .addText((text) =>
-        text.setValue(store.name).onChange(async (value) => {
-          store.name = value.trim() || "GitHub";
-          await this.plugin.saveSettings();
-          this.display();
-        })
+      .setName(t("concurrency"))
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 8, 1)
+          .setValue(this.plugin.settings.concurrency)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.concurrency = value;
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl)
-      .addButton((button) =>
-        button
-          .setButtonText(t("addStore"))
-          .onClick(async () => {
-            const id = `github-${Date.now()}`;
-            this.plugin.settings.stores.push({
-              ...structuredClone(DEFAULT_SETTINGS.stores[0]),
-              id,
-              name: `GitHub ${this.plugin.settings.stores.length + 1}`
-            });
-            this.plugin.settings.activeStoreId = id;
-            await this.plugin.saveSettings();
-            this.display();
-          })
-      )
-      .addButton((button) =>
-        button
-          .setButtonText(t("removeStore"))
-          .setDisabled(this.plugin.settings.stores.length <= 1)
-          .onClick(async () => {
-            if (this.plugin.settings.stores.length <= 1) return;
-            this.plugin.settings.stores = this.plugin.settings.stores.filter((configuredStore) => configuredStore.id !== store.id);
-            this.plugin.settings.activeStoreId = this.plugin.settings.stores[0].id;
-            await this.plugin.saveSettings();
-            this.display();
-          })
+      .setName(t("deleteLocal"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.deleteLocalAfterUpload).onChange(async (value) => {
+          this.plugin.settings.deleteLocalAfterUpload = value;
+          await this.plugin.saveSettings();
+        })
       );
+  }
+
+  private renderStoreSettings(containerEl: HTMLElement, store: RemoteStoreSettings): void {
+    const t = this.plugin.t;
 
     new Setting(containerEl)
       .setName(t("githubRepo"))
@@ -115,19 +106,6 @@ export class ImageUploaderSettingTab extends PluginSettingTab {
           .setValue(store.github.branch)
           .onChange(async (value) => {
             store.github.branch = value.trim() || "main";
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t("basePath"))
-      .setDesc(t("basePathDesc"))
-      .addText((text) =>
-        text
-          .setPlaceholder("images/{yyyy}/{MM}")
-          .setValue(store.github.basePath)
-          .onChange(async (value) => {
-            store.github.basePath = value.trim() || "images/{yyyy}/{MM}";
             await this.plugin.saveSettings();
           })
       );
@@ -158,7 +136,7 @@ export class ImageUploaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t("privateImages"))
-      .setDesc(t("privateImagesDesc"))
+      .setDesc(this.privateImagesDesc())
       .addToggle((toggle) =>
         toggle.setValue(store.github.useTokenForPrivateImages).onChange(async (value) => {
           store.github.useTokenForPrivateImages = value;
@@ -166,38 +144,21 @@ export class ImageUploaderSettingTab extends PluginSettingTab {
           this.display();
         })
       );
-    if (store.github.useTokenForPrivateImages || store.github.customDomain) {
-      containerEl.createDiv({ cls: "ok-image-uploader-warning", text: t("privateImagesWarning") });
-    }
-
-    new Setting(containerEl)
-      .setName(t("concurrency"))
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 8, 1)
-          .setValue(this.plugin.settings.concurrency)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.concurrency = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName(t("deleteLocal"))
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.deleteLocalAfterUpload).onChange(async (value) => {
-          this.plugin.settings.deleteLocalAfterUpload = value;
-          await this.plugin.saveSettings();
-        })
-      );
   }
 
-  private activeStore() {
-    return (
-      this.plugin.settings.stores.find((store) => store.id === this.plugin.settings.activeStoreId) ??
-      this.plugin.settings.stores[0]
-    );
+  private activeStoreByType(type: "github"): RemoteStoreSettings {
+    const store = this.plugin.settings.stores.find((configuredStore) => configuredStore.type === type);
+    if (!store) {
+      throw new Error(`Missing ${type} store settings.`);
+    }
+    return store;
+  }
+
+  private privateImagesDesc(): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    fragment.appendText(this.plugin.t("privateImagesDesc"));
+    fragment.createDiv({ cls: "ok-image-uploader-warning", text: this.plugin.t("privateImagesWarning") });
+    return fragment;
   }
 }
 

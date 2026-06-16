@@ -17,6 +17,7 @@ An Obsidian plugin that uploads pasted and embedded images to a remote GitHub re
 - Optional private repository URL mode that embeds the token into raw GitHub image URLs.
 - Configurable upload concurrency and log level.
 - Short-lived in-memory hash cache reuses recently uploaded image URLs and skips duplicate uploads.
+- Drag rendered images to resize them proportionally and save the result as Markdown attributes.
 - Uploaded image paths use `document-name/original-image-name-random.ext`.
 - UI languages: Simplified Chinese, Traditional Chinese, English, Korean, Japanese.
 
@@ -86,6 +87,7 @@ This project uses Changesets and GitHub Actions.
 - 可选：私有仓库图片 URL 模式，将 token 嵌入 raw GitHub 图片地址。
 - 可配置上传并发数和日志等级。
 - 短时间内存哈希缓存会复用最近上传过的图片地址，跳过重复上传。
+- 可拖拽调整渲染图片大小，按等比例缩放，并将结果保存为 Markdown attributes。
 - 上传路径格式为 `文档名/图片原始名-随机字符串.ext`。
 - 界面语言：简体中文、繁體中文、English、한국어、日本語。
 
@@ -155,6 +157,7 @@ npm run build
 - 可選：私有倉庫圖片 URL 模式，將 token 嵌入 raw GitHub 圖片位址。
 - 可設定上傳並行數與日誌等級。
 - 短時間記憶體雜湊快取會重用最近上傳過的圖片位址，跳過重複上傳。
+- 可拖曳調整渲染圖片大小，按等比例縮放，並將結果儲存為 Markdown attributes。
 - 上傳路徑格式為 `文件名/圖片原始名-隨機字串.ext`。
 - 介面語言：简体中文、繁體中文、English、한국어、日本語。
 
@@ -224,6 +227,7 @@ npm run build
 - 선택 사항: 비공개 저장소 이미지 URL에 token을 포함하는 모드.
 - 업로드 동시성 및 로그 레벨을 설정할 수 있습니다.
 - 짧은 시간 동안 유지되는 메모리 해시 캐시가 최근 업로드된 이미지 URL을 재사용하여 중복 업로드를 건너뜁니다.
+- 렌더링된 이미지를 드래그하여 비율을 유지한 채 크기를 조정하고 결과를 Markdown attributes로 저장합니다.
 - 업로드 경로 형식은 `문서명/원본이미지명-랜덤문자열.ext`입니다.
 - UI 언어: 简体中文, 繁體中文, English, 한국어, 日本語.
 
@@ -293,6 +297,7 @@ npm run build
 - 任意: プライベートリポジトリ画像 URL に token を埋め込むモード。
 - アップロード同時数とログレベルを設定できます。
 - 短時間のインメモリハッシュキャッシュにより、最近アップロードした画像 URL を再利用し、重複アップロードをスキップします。
+- レンダリングされた画像をドラッグして縦横比を保ったままリサイズし、結果を Markdown attributes として保存します。
 - アップロードパス形式は `ドキュメント名/元画像名-ランダム文字列.ext` です。
 - UI 言語: 简体中文、繁體中文、English、한국어、日本語。
 

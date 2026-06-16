@@ -128,6 +128,55 @@ export class ImageUploadProcessor {
     return true;
   }
 
+  async processRenderedImage(
+    file: TFile,
+    location: {
+      lineStart: number;
+      imageIndex: number;
+      refStart?: number;
+      refEnd?: number;
+    },
+    showNotice = true
+  ): Promise<boolean> {
+    if (file.extension !== "md") {
+      return false;
+    }
+    const store = this.getStore();
+    if (!store) {
+      if (showNotice) new Notice(this.t("missingConfig"));
+      return false;
+    }
+
+    const markdown = await this.app.vault.read(file);
+    const ref = this.findReferenceForRenderedImage(markdown, location, store);
+    if (!ref) {
+      if (showNotice) new Notice(this.t("batchSkipped"));
+      return false;
+    }
+
+    const source = await resolveImageSource(this.app, ref.target, file);
+    if (!source) {
+      if (showNotice) new Notice(this.t("batchSkipped"));
+      return false;
+    }
+
+    const result = await this.uploadWithCache(store, {
+      app: this.app,
+      activeFile: file,
+      fileName: source.fileName,
+      extension: source.extension,
+      contentType: source.contentType,
+      data: source.data
+    });
+
+    const nextMarkdown = markdown.slice(0, ref.start) + replacementFor(ref, result.url) + markdown.slice(ref.end);
+    this.selfModified.add(file.path);
+    await this.app.vault.modify(file, nextMarkdown);
+    await this.deleteLocalSources([source]);
+    if (showNotice) new Notice(this.t("uploadDone"));
+    return true;
+  }
+
   async handlePaste(event: ClipboardEvent, editor: Editor, view: MarkdownView): Promise<boolean> {
     const store = this.getStore();
     if (!store) {
@@ -281,6 +330,39 @@ export class ImageUploadProcessor {
       }) ?? null
     );
   }
+
+  private findReferenceForRenderedImage(
+    markdown: string,
+    location: {
+      lineStart: number;
+      imageIndex: number;
+      refStart?: number;
+      refEnd?: number;
+    },
+    store: RemoteStore
+  ): ImageReference | null {
+    const sectionStart = offsetForLine(markdown, location.lineStart);
+    if (Number.isInteger(location.refStart) && Number.isInteger(location.refEnd)) {
+      const expectedStart = sectionStart + location.refStart!;
+      const expectedEnd = sectionStart + location.refEnd!;
+      const refs = this.filterUploadableRefs(parseImageReferences(markdown.slice(expectedStart, expectedEnd)), store);
+      const exact = refs.find((ref) => ref.start === 0 && ref.end === expectedEnd - expectedStart);
+      if (exact) {
+        return offsetReference(exact, expectedStart);
+      }
+
+      const nearby = this.filterUploadableRefs(parseImageReferences(markdown.slice(Math.max(0, expectedStart - 200), expectedEnd + 200)), store);
+      const nearbyOffset = Math.max(0, expectedStart - 200);
+      const relocated = nearby.find((ref) => nearbyOffset + ref.start === expectedStart);
+      if (relocated) {
+        return offsetReference(relocated, nearbyOffset);
+      }
+    }
+
+    const refsAfterSectionStart = this.filterUploadableRefs(parseImageReferences(markdown.slice(sectionStart)), store);
+    const byIndex = refsAfterSectionStart[location.imageIndex];
+    return byIndex ? offsetReference(byIndex, sectionStart) : null;
+  }
 }
 
 export async function runWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -307,6 +389,27 @@ function isAnyGitHubRepoImageUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function offsetForLine(markdown: string, line: number): number {
+  if (line <= 0) return 0;
+  let offset = 0;
+  for (let current = 0; current < line && offset < markdown.length; current += 1) {
+    const next = markdown.indexOf("\n", offset);
+    if (next === -1) return markdown.length;
+    offset = next + 1;
+  }
+  return offset;
+}
+
+function offsetReference(ref: ImageReference, offset: number): ImageReference {
+  return {
+    ...ref,
+    start: ref.start + offset,
+    end: ref.end + offset,
+    targetStart: ref.targetStart + offset,
+    targetEnd: ref.targetEnd + offset
+  };
 }
 
 function extensionFromMime(mime: string): string {
