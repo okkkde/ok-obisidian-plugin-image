@@ -1,0 +1,9 @@
+{
+  "id": "ok-obsidian-plugin-image",
+  "name": "Ok Obsidian Plugin Image",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Upload pasted and embedded images to GitHub repositories with custom domain support.",
+  "author": "ok de packages",
+  "isDesktopOnly": false
+}
