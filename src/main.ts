@@ -15,8 +15,6 @@ export default class ImageUploaderPlugin extends Plugin {
   private logger = new Logger(() => this.settings.logLevel);
   private processor!: ImageUploadProcessor;
   private resizeController!: ImageResizeController;
-  private pasteListenerMonitor?: PasteListenerMonitor;
-  private warnedAboutPasteListeners = false;
   private lastPreviewImageContext: PreviewImageContext | null = null;
   private fallbackImageMenuTimer?: number;
 
@@ -26,8 +24,6 @@ export default class ImageUploaderPlugin extends Plugin {
     this.resizeController = new ImageResizeController(this.app, this.logger, (event, context) => {
       this.showRenderedImageMenu(event, context);
     });
-    this.pasteListenerMonitor = createPasteListenerMonitor(document);
-    this.register(() => this.pasteListenerMonitor?.restore());
 
     this.addSettingTab(new ImageUploaderSettingTab(this.app, this));
     this.registerMarkdownPostProcessor((el, ctx) => {
@@ -119,18 +115,17 @@ export default class ImageUploaderPlugin extends Plugin {
       })
     );
 
-    this.registerDomEvent(document, "paste", (event: ClipboardEvent) => {
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      const editor = view?.editor;
-      if (!view || !editor || !hasValidActiveStore(this.settings)) return;
-      if (!isPasteTargetInView(event, view)) return;
-      if (!this.processor.canHandlePaste(event)) return;
-      this.warnIfMultiplePasteListeners();
-      void this.processor.handlePaste(event, editor, view).catch((error) => {
-        this.logger.error("Failed to upload pasted image", error);
-        new Notice(this.t("uploadFailed"));
-      });
-    });
+    this.registerEvent(
+      this.app.workspace.on("editor-paste", (event, editor, info) => {
+        if (event.defaultPrevented || !hasValidActiveStore(this.settings)) return;
+        if (!this.processor.canHandlePaste(event)) return;
+        // Image files use native attachment insertion; markdown is inserted before upload.
+        void this.processor.handlePaste(event, editor, info).catch((error) => {
+          this.logger.error("Failed to upload pasted image", error);
+          new Notice(this.t("uploadFailed"));
+        });
+      })
+    );
 
     this.logger.log("Plugin loaded");
   }
@@ -154,18 +149,6 @@ export default class ImageUploaderPlugin extends Plugin {
       return null;
     }
     return createActiveStore(this.settings);
-  }
-
-  private warnIfMultiplePasteListeners(): void {
-    const count = this.pasteListenerMonitor?.count() ?? 0;
-    if (this.warnedAboutPasteListeners || count <= 1) {
-      return;
-    }
-    this.warnedAboutPasteListeners = true;
-    this.logger.warn(
-      "Multiple document paste listeners observed while handling an image paste; another plugin may also process the pasted image.",
-      { observedDocumentPasteListeners: count }
-    );
   }
 
   private capturePreviewImageContext(event: MouseEvent): PreviewImageMenuTarget | null {
@@ -370,15 +353,6 @@ export default class ImageUploaderPlugin extends Plugin {
   }
 }
 
-function isPasteTargetInView(event: ClipboardEvent, view: MarkdownView): boolean {
-  return event.target instanceof Node && view.containerEl.contains(event.target);
-}
-
-interface PasteListenerMonitor {
-  count(): number;
-  restore(): void;
-}
-
 interface PreviewImageContext {
   sourcePath: string;
   imageTarget: string;
@@ -441,42 +415,6 @@ function hasVisibleObsidianMenu(): boolean {
     const rect = menu.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   });
-}
-
-function createPasteListenerMonitor(target: Document): PasteListenerMonitor {
-  const listeners = new Set<EventListenerOrEventListenerObject>();
-  const originalAddEventListener = target.addEventListener;
-  const originalRemoveEventListener = target.removeEventListener;
-
-  target.addEventListener = function addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-    options?: boolean | AddEventListenerOptions
-  ) {
-    if (type === "paste" && listener) {
-      listeners.add(listener);
-    }
-    return originalAddEventListener.call(this, type, listener, options);
-  } as Document["addEventListener"];
-
-  target.removeEventListener = function removeEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject | null,
-    options?: boolean | EventListenerOptions
-  ) {
-    if (type === "paste" && listener) {
-      listeners.delete(listener);
-    }
-    return originalRemoveEventListener.call(this, type, listener, options);
-  } as Document["removeEventListener"];
-
-  return {
-    count: () => listeners.size,
-    restore: () => {
-      target.addEventListener = originalAddEventListener;
-      target.removeEventListener = originalRemoveEventListener;
-    }
-  };
 }
 
 function mergeSettings(defaults: PluginSettings, loaded: Partial<PluginSettings>): PluginSettings {
