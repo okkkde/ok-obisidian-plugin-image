@@ -24,6 +24,7 @@ interface UploadCacheEntry {
 
 export class ImageUploadProcessor {
   private processingFiles = new Set<string>();
+  private pendingFiles = new Set<string>();
   private debounceTimers = new Map<string, number>();
   private selfModified = new Set<string>();
   private uploadCache = new Map<string, UploadCacheEntry>();
@@ -58,7 +59,9 @@ export class ImageUploadProcessor {
   }
 
   async processFile(file: TFile, showNotice = false): Promise<ProcessResult> {
-    if (this.processingFiles.has(file.path) || file.extension !== "md") {
+    if (file.extension !== "md") return { uploaded: 0, deleted: 0 };
+    if (this.processingFiles.has(file.path)) {
+      this.pendingFiles.add(file.path);
       return { uploaded: 0, deleted: 0 };
     }
     const store = this.getStore();
@@ -82,17 +85,41 @@ export class ImageUploadProcessor {
         return { uploaded: 0, deleted: 0 };
       }
 
-      let nextMarkdown = markdown;
-      for (const item of replacements.sort((a, b) => b.ref.start - a.ref.start)) {
-        nextMarkdown = nextMarkdown.slice(0, item.ref.start) + item.replacement + nextMarkdown.slice(item.ref.end);
+      // Uploads may take seconds. Apply results to the latest document so typing,
+      // moved links and images pasted during the upload are preserved.
+      let applied: Replacement[] = [];
+      const replace = (current: string): string => {
+        applied = [];
+        let next = current;
+        for (const ref of parseImageReferences(current).reverse()) {
+          const item = replacements.find((candidate) => candidate.ref.fullMatch === ref.fullMatch);
+          if (!item) continue;
+          next = next.slice(0, ref.start) + item.replacement + next.slice(ref.end);
+          applied.push(item);
+        }
+        return next;
+      };
+      const view = this.app.workspace.getLeavesOfType("markdown")
+        .map((leaf) => leaf.view)
+        .find((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === file.path);
+      if (view) {
+        const current = view.editor.getValue();
+        replace(current);
+        // One transaction preserves the cursor and undo history while replacing in place.
+        const changes = parseImageReferences(current).flatMap((ref) => {
+          const item = replacements.find((candidate) => candidate.ref.fullMatch === ref.fullMatch);
+          return item ? [{ from: view.editor.offsetToPos(ref.start), to: view.editor.offsetToPos(ref.end), text: item.replacement }] : [];
+        });
+        if (changes.length > 0) view.editor.transaction({ changes });
+      } else {
+        await this.app.vault.process(file, replace);
       }
-      this.selfModified.add(file.path);
-      await this.app.vault.modify(file, nextMarkdown);
-      const deleted = await this.deleteLocalSources(replacements.map((item) => item.source));
+      const deleted = await this.deleteLocalSources(applied.map((item) => item.source));
       if (showNotice) new Notice(this.t("batchDone"));
-      return { uploaded: replacements.length, deleted };
+      return { uploaded: applied.length, deleted };
     } finally {
       this.processingFiles.delete(file.path);
+      if (this.pendingFiles.delete(file.path)) this.scheduleFile(file);
     }
   }
 
@@ -177,7 +204,9 @@ export class ImageUploadProcessor {
     return true;
   }
 
-  async handlePaste(event: ClipboardEvent, editor: Editor, view: MarkdownView): Promise<boolean> {
+  async handlePaste(event: ClipboardEvent, editor: Editor, view: Pick<MarkdownView, "file">): Promise<boolean> {
+    if (event.defaultPrevented) return false;
+
     const store = this.getStore();
     if (!store) {
       return false;
@@ -186,26 +215,9 @@ export class ImageUploadProcessor {
     const clipboard = event.clipboardData;
     if (!clipboard) return false;
 
-    const imageFiles = Array.from(clipboard.files).filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      event.preventDefault();
-      const links = await runWithConcurrency(imageFiles, this.settings.concurrency, async (file) => {
-        const data = await file.arrayBuffer();
-        const extension = file.name.split(".").pop()?.toLowerCase() || extensionFromMime(file.type);
-        const result = await this.uploadWithCache(store, {
-          app: this.app,
-          activeFile: view.file,
-          fileName: file.name || `image.${extension}`,
-          extension,
-          contentType: file.type || `image/${extension}`,
-          data
-        });
-        return `![](${result.url})`;
-      });
-      editor.replaceSelection(links.join("\n"));
-      new Notice(this.t("uploadDone"));
-      return true;
-    }
+    // Let Obsidian save and embed clipboard files immediately. The vault modify
+    // handler uploads that local reference and replaces it only after success.
+    if (Array.from(clipboard.files).some((file) => file.type.startsWith("image/"))) return false;
 
     const text = clipboard.getData("text/markdown") || clipboard.getData("text/plain");
     if (!text || parseImageReferences(text).length === 0) {
@@ -215,24 +227,20 @@ export class ImageUploadProcessor {
     if (refs.length === 0) return false;
 
     event.preventDefault();
-    const replacements = await this.buildReplacements(refs, view.file, store);
-    let nextText = text;
-    for (const item of replacements.sort((a, b) => b.ref.start - a.ref.start)) {
-      nextText = nextText.slice(0, item.ref.start) + item.replacement + nextText.slice(item.ref.end);
-    }
-    editor.replaceSelection(nextText);
-    await this.deleteLocalSources(replacements.map((item) => item.source));
-    new Notice(this.t("uploadDone"));
+    editor.replaceSelection(text);
+    if (view.file) this.scheduleFile(view.file);
     return true;
   }
 
   canHandlePaste(event: ClipboardEvent): boolean {
+    if (event.defaultPrevented) return false;
+
     const store = this.getStore();
     const clipboard = event.clipboardData;
     if (!store || !clipboard) return false;
 
     const hasImageFile = Array.from(clipboard.files).some((file) => file.type.startsWith("image/"));
-    if (hasImageFile) return true;
+    if (hasImageFile) return false;
 
     const text = clipboard.getData("text/markdown") || clipboard.getData("text/plain");
     if (!text) return false;
@@ -410,12 +418,4 @@ function offsetReference(ref: ImageReference, offset: number): ImageReference {
     targetStart: ref.targetStart + offset,
     targetEnd: ref.targetEnd + offset
   };
-}
-
-function extensionFromMime(mime: string): string {
-  if (mime === "image/jpeg") return "jpg";
-  if (mime === "image/gif") return "gif";
-  if (mime === "image/webp") return "webp";
-  if (mime === "image/svg+xml") return "svg";
-  return "png";
 }
